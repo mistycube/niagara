@@ -31,11 +31,19 @@ VkInstance createInstance()
 #ifdef VK_USE_PLATFORM_WIN32_KHR
 		VK_KHR_WIN32_SURFACE_EXTENSION_NAME,
 #endif
+#ifdef VK_USE_PLATFORM_METAL_EXT
+		VK_EXT_METAL_SURFACE_EXTENSION_NAME,
+		VK_KHR_GET_PHYSICAL_DEVICE_PROPERTIES_2_EXTENSION_NAME,
+		VK_KHR_PORTABILITY_ENUMERATION_EXTENSION_NAME,
+#endif
 #ifdef _DEBUG
 		VK_EXT_DEBUG_REPORT_EXTENSION_NAME,
 #endif
 	};
 
+#ifdef VK_USE_PLATFORM_METAL_EXT
+	createInfo.flags = VK_INSTANCE_CREATE_ENUMERATE_PORTABILITY_BIT_KHR;
+#endif
 	createInfo.ppEnabledExtensionNames = extensions;
 	createInfo.enabledExtensionCount = sizeof(extensions) / sizeof(extensions[0]);
 
@@ -50,10 +58,6 @@ static VkBool32 VKAPI_CALL debugReportCallback(VkDebugReportFlagsEXT flags, VkDe
 	// This silences warnings like "For optimal performance image layout should be VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL instead of GENERAL."
 	// We'll assume other performance warnings are also not useful.
 	if (flags & VK_DEBUG_REPORT_PERFORMANCE_WARNING_BIT_EXT)
-		return VK_FALSE;
-
-	// Works around https://github.com/KhronosGroup/Vulkan-ValidationLayers/issues/1512
-	if (strstr(pMessage, "Invalid opcode: 400 The Vulkan spec states: module must be a valid VkShaderModule handle"))
 		return VK_FALSE;
 
 	const char* type =
@@ -133,7 +137,7 @@ VkPhysicalDevice pickPhysicalDevice(VkPhysicalDevice* physicalDevices, uint32_t 
 		if (!supportsPresentation(physicalDevices[i], familyIndex))
 			continue;
 
-		if (props.apiVersion < VK_API_VERSION_1_2)
+		if (props.apiVersion < VK_API_VERSION_1_1)
 			continue;
 
 		if (!preferred && props.deviceType == VK_PHYSICAL_DEVICE_TYPE_DISCRETE_GPU)
@@ -189,18 +193,18 @@ VkDevice createDevice(VkInstance instance, VkPhysicalDevice physicalDevice, uint
 
 	VkPhysicalDeviceFeatures2 features = { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2 };
 	features.features.multiDrawIndirect = true;
-	features.features.pipelineStatisticsQuery = true;
+	// features.features.pipelineStatisticsQuery = true;
 	features.features.shaderInt16 = true;
 	features.features.shaderInt64 = true;
 
 	VkPhysicalDeviceVulkan11Features features11 = { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_1_FEATURES };
 	features11.storageBuffer16BitAccess = true;
+	features11.shaderDrawParameters = true;
 
 	VkPhysicalDeviceVulkan12Features features12 = { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES };
 	features12.drawIndirectCount = true;
 	features12.storageBuffer8BitAccess = true;
 	features12.uniformAndStorageBuffer8BitAccess = true;
-	features12.storagePushConstant8 = true;
 	features12.shaderFloat16 = true;
 	features12.shaderInt8 = true;
 	features12.samplerFilterMinmax = true;

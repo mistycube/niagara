@@ -25,6 +25,8 @@ bool occlusionEnabled = true;
 bool debugPyramid = false;
 int debugPyramidLevel = 0;
 
+#define SHADER_PATH "/Users/mistycube/Projects/niagara/build/src/shaders/"
+
 VkSemaphore createSemaphore(VkDevice device)
 {
 	VkSemaphoreCreateInfo createInfo = { VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO };
@@ -33,6 +35,18 @@ VkSemaphore createSemaphore(VkDevice device)
 	VK_CHECK(vkCreateSemaphore(device, &createInfo, 0, &semaphore));
 
 	return semaphore;
+}
+
+VkFence createFence(VkDevice device)
+{
+	VkFenceCreateInfo fenceInfo{};
+	fenceInfo.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO;
+	fenceInfo.flags = VK_FENCE_CREATE_SIGNALED_BIT;
+
+	VkFence fence = 0;	
+	VK_CHECK(vkCreateFence(device, &fenceInfo, 0, &fence));
+
+	return fence;
 }
 
 VkCommandPool createCommandPool(VkDevice device, uint32_t familyIndex)
@@ -219,24 +233,29 @@ size_t appendMeshlets(Geometry& result, const std::vector<Vertex>& vertices, con
 {
 	const size_t max_vertices = 64;
 	const size_t max_triangles = 124;
+	const float cone_weight = 0.5f;
 
 	std::vector<meshopt_Meshlet> meshlets(meshopt_buildMeshletsBound(indices.size(), max_vertices, max_triangles));
-	meshlets.resize(meshopt_buildMeshlets(meshlets.data(), indices.data(), indices.size(), vertices.size(), max_vertices, max_triangles));
+	std::vector<unsigned int> meshlet_vertices(meshlets.size() * max_vertices);
+	std::vector<unsigned char> meshlet_triangles(meshlets.size() * max_triangles * 3);
 
+	meshlets.resize(meshopt_buildMeshlets(meshlets.data(), meshlet_vertices.data(), meshlet_triangles.data(), indices.data(), indices.size(), &vertices[0].vx, vertices.size(), sizeof(Vertex), max_vertices, max_triangles, cone_weight));
+
+	// note: we can append meshlet_vertices & meshlet_triangles buffers more or less directly with small changes in Meshlet struct, but for now keep the GPU side layout flexible and separate
 	for (auto& meshlet : meshlets)
 	{
 		size_t dataOffset = result.meshletdata.size();
 
 		for (unsigned int i = 0; i < meshlet.vertex_count; ++i)
-			result.meshletdata.push_back(meshlet.vertices[i]);
+			result.meshletdata.push_back(meshlet_vertices[meshlet.vertex_offset + i]);
 
-		const unsigned int* indexGroups = reinterpret_cast<const unsigned int*>(meshlet.indices);
+		const unsigned int* indexGroups = reinterpret_cast<const unsigned int*>(&meshlet_triangles[0] + meshlet.triangle_offset);
 		unsigned int indexGroupCount = (meshlet.triangle_count * 3 + 3) / 4;
 
 		for (unsigned int i = 0; i < indexGroupCount; ++i)
 			result.meshletdata.push_back(indexGroups[i]);
 
-		meshopt_Bounds bounds = meshopt_computeMeshletBounds(&meshlet, &vertices[0].vx, vertices.size(), sizeof(Vertex));
+		meshopt_Bounds bounds = meshopt_computeMeshletBounds(&meshlet_vertices[meshlet.vertex_offset], &meshlet_triangles[meshlet.triangle_offset], meshlet.triangle_count, &vertices[0].vx, vertices.size(), sizeof(Vertex));
 
 		Meshlet m = {};
 		m.dataOffset = uint32_t(dataOffset);
@@ -252,9 +271,6 @@ size_t appendMeshlets(Geometry& result, const std::vector<Vertex>& vertices, con
 
 		result.meshlets.push_back(m);
 	}
-
-	while (result.meshlets.size() % 32)
-		result.meshlets.push_back(Meshlet());
 
 	return meshlets.size();
 }
@@ -528,6 +544,9 @@ int main(int argc, const char** argv)
 	VkSemaphore releaseSemaphore = createSemaphore(device);
 	assert(releaseSemaphore);
 
+	VkFence inFlightFence = createFence(device);
+	assert(inFlightFence);
+
 	VkQueue queue = 0;
 	vkGetDeviceQueue(device, familyIndex, 0, &queue);
 
@@ -543,29 +562,29 @@ int main(int argc, const char** argv)
 	bool rcs = false;
 
 	Shader drawcullCS = {};
-	rcs = loadShader(drawcullCS, device, "shaders/drawcull.comp.spv");
+	rcs = loadShader(drawcullCS, device, SHADER_PATH "drawcull.comp.spv");
 	assert(rcs);
 
 	Shader depthreduceCS = {};
-	rcs = loadShader(depthreduceCS, device, "shaders/depthreduce.comp.spv");
+	rcs = loadShader(depthreduceCS, device, SHADER_PATH "depthreduce.comp.spv");
 	assert(rcs);
 
 	Shader meshVS = {};
-	rcs = loadShader(meshVS, device, "shaders/mesh.vert.spv");
+	rcs = loadShader(meshVS, device, SHADER_PATH "mesh.vert.spv");
 	assert(rcs);
 
 	Shader meshFS = {};
-	rcs = loadShader(meshFS, device, "shaders/mesh.frag.spv");
+	rcs = loadShader(meshFS, device, SHADER_PATH "mesh.frag.spv");
 	assert(rcs);
 
 	Shader meshletMS = {};
 	Shader meshletTS = {};
 	if (meshShadingSupported)
 	{
-		rcs = loadShader(meshletMS, device, "shaders/meshlet.mesh.spv");
+		rcs = loadShader(meshletMS, device, SHADER_PATH "meshlet.mesh.spv");
 		assert(rcs);
 
-		rcs = loadShader(meshletTS, device, "shaders/meshlet.task.spv");
+		rcs = loadShader(meshletTS, device, SHADER_PATH "meshlet.task.spv");
 		assert(rcs);
 	}
 
@@ -601,8 +620,8 @@ int main(int argc, const char** argv)
 	VkQueryPool queryPoolTimestamp = createQueryPool(device, 128, VK_QUERY_TYPE_TIMESTAMP);
 	assert(queryPoolTimestamp);
 
-	VkQueryPool queryPoolPipeline = createQueryPool(device, 4, VK_QUERY_TYPE_PIPELINE_STATISTICS);
-	assert(queryPoolPipeline);
+	// VkQueryPool queryPoolPipeline = createQueryPool(device, 4, VK_QUERY_TYPE_PIPELINE_STATISTICS);
+	// assert(queryPoolPipeline);
 
 	VkCommandPool commandPool = createCommandPool(device, familyIndex);
 	assert(commandPool);
@@ -650,6 +669,12 @@ int main(int argc, const char** argv)
 			printf("Error: mesh %s failed to load\n", argv[i]);
 	}
 
+	if (geometry.meshes.empty())
+	{
+		printf("Error: no meshes loaded!\n");
+		return 1;
+	}
+
 	Buffer scratch = {};
 	createBuffer(scratch, device, memoryProperties, 128 * 1024 * 1024, VK_BUFFER_USAGE_TRANSFER_SRC_BIT, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
 
@@ -681,13 +706,14 @@ int main(int argc, const char** argv)
 		uploadBuffer(device, commandPool, commandBuffer, queue, mdb, scratch, geometry.meshletdata.data(), geometry.meshletdata.size() * sizeof(uint32_t));
 	}
 
-	uint32_t drawCount = 1'000'000;
+	uint32_t drawCount = 100000;
+
 	std::vector<MeshDraw> draws(drawCount);
 
 	srand(42);
 
-	float sceneRadius = 300;
-	float drawDistance = 200;
+	float sceneRadius = 100;
+	float drawDistance = 300;
 
 	for (uint32_t i = 0; i < drawCount; ++i)
 	{
@@ -702,10 +728,10 @@ int main(int argc, const char** argv)
 		draw.scale = (float(rand()) / RAND_MAX) + 1;
 		draw.scale *= 2;
 
-		vec3 axis((float(rand()) / RAND_MAX) * 2 - 1, (float(rand()) / RAND_MAX) * 2 - 1, (float(rand()) / RAND_MAX) * 2 - 1);
+		vec3 axis = normalize(vec3((float(rand()) / RAND_MAX) * 2 - 1, (float(rand()) / RAND_MAX) * 2 - 1, (float(rand()) / RAND_MAX) * 2 - 1));
 		float angle = glm::radians((float(rand()) / RAND_MAX) * 90.f);
 
-		draw.orientation = rotate(quat(1, 0, 0, 0), angle, axis);
+		draw.orientation = quat(cosf(angle * 0.5f), axis * sinf(angle * 0.5f));
 
 		draw.meshIndex = uint32_t(meshIndex);
 		draw.vertexOffset = mesh.vertexOffset;
@@ -713,10 +739,6 @@ int main(int argc, const char** argv)
 
 	Buffer db = {};
 	createBuffer(db, device, memoryProperties, 128 * 1024 * 1024, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
-
-	Buffer dvb = {};
-	createBuffer(dvb, device, memoryProperties, 128 * 1024 * 1024, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
-	bool dvbCleared = false;
 
 	Buffer dcb = {};
 	createBuffer(dcb, device, memoryProperties, 128 * 1024 * 1024, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
@@ -737,14 +759,42 @@ int main(int argc, const char** argv)
 	uint32_t depthPyramidLevels = 0;
 
 	double frameCpuAvg = 0;
+	double frameCpuWaitAvg = 0;
 	double frameGpuAvg = 0;
 
 	uint64_t frameIndex = 0;
 
 	while (!glfwWindowShouldClose(window))
 	{
-		double frameCpuBegin = glfwGetTime() * 1000;
+		
+		double frameFenceBegin = glfwGetTime() * 1000;
+		auto itsdeadjim = [&]()
+		{
+			printf("FATAL ERROR: DEVICE LOST (frame %lld)\n", frameIndex);
 
+			if (checkpointsSupported)
+			{
+				uint32_t checkpointCount = 0;
+				vkGetQueueCheckpointDataNV(queue, &checkpointCount, 0);
+
+				std::vector<VkCheckpointDataNV> checkpoints(checkpointCount, { VK_STRUCTURE_TYPE_CHECKPOINT_DATA_NV });
+				vkGetQueueCheckpointDataNV(queue, &checkpointCount, checkpoints.data());
+
+				for (auto& cp: checkpoints)
+				{
+					printf("NV CHECKPOINT: stage %08x name %s\n", cp.stage, cp.pCheckpointMarker ? static_cast<const char*>(cp.pCheckpointMarker) : "??");
+				}
+			}
+		};
+        VkResult wfi = vkWaitForFences(device, 1, &inFlightFence, VK_TRUE, UINT64_MAX);
+		if (wfi == VK_ERROR_DEVICE_LOST)
+			itsdeadjim();
+		VK_CHECK(wfi);
+        vkResetFences(device, 1, &inFlightFence);
+		
+		double frameFenceEnd = glfwGetTime() * 1000;
+
+		double frameCpuBegin = glfwGetTime() * 1000;
 		glfwPollEvents();
 
 		SwapchainStatus swapchainStatus = updateSwapchain(swapchain, physicalDevice, device, surface, familyIndex, swapchainFormat);
@@ -800,19 +850,7 @@ int main(int argc, const char** argv)
 		VK_CHECK(vkBeginCommandBuffer(commandBuffer, &beginInfo));
 
 		vkCmdResetQueryPool(commandBuffer, queryPoolTimestamp, 0, 128);
-		vkCmdWriteTimestamp(commandBuffer, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, queryPoolTimestamp, 0);
-
-		if (!dvbCleared)
-		{
-			vkCmdFillBuffer(commandBuffer, dvb.buffer, 0, 4 * drawCount, 0);
-
-			VkBufferMemoryBarrier fillBarrier = bufferBarrier(dvb.buffer, VK_ACCESS_TRANSFER_WRITE_BIT, VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT);
-			vkCmdPipelineBarrier(commandBuffer, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0, 0, 0, 1, &fillBarrier, 0, 0);
-
-			dvbCleared = true;
-
-			VK_CHECKPOINT("dvb cleared");
-		}
+		vkCmdWriteTimestamp(commandBuffer, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, queryPoolTimestamp, 0);
 
 		float znear = 0.5f;
 		mat4 projection = perspectiveProjection(glm::radians(70.f), float(swapchain.width) / float(swapchain.height), znear);
@@ -843,31 +881,12 @@ int main(int argc, const char** argv)
 		Globals globals = {};
 		globals.projection = projection;
 
-		auto barrier = [&]()
+		auto fullbarrier = [&]()
 		{
 			VkMemoryBarrier wfi = { VK_STRUCTURE_TYPE_MEMORY_BARRIER };
 			wfi.srcAccessMask = VK_ACCESS_MEMORY_WRITE_BIT;
 			wfi.dstAccessMask = VK_ACCESS_MEMORY_READ_BIT;
 			vkCmdPipelineBarrier(commandBuffer, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, 0, 1, &wfi, 0, 0, 0, 0);
-		};
-
-		auto itsdeadjim = [&]()
-		{
-			printf("FATAL ERROR: DEVICE LOST (frame %lld)\n", frameIndex);
-
-			if (checkpointsSupported)
-			{
-				uint32_t checkpointCount = 0;
-				vkGetQueueCheckpointDataNV(queue, &checkpointCount, 0);
-
-				std::vector<VkCheckpointDataNV> checkpoints(checkpointCount, { VK_STRUCTURE_TYPE_CHECKPOINT_DATA_NV });
-				vkGetQueueCheckpointDataNV(queue, &checkpointCount, checkpoints.data());
-
-				for (auto& cp: checkpoints)
-				{
-					printf("NV CHECKPOINT: stage %08x name %s\n", cp.stage, cp.pCheckpointMarker ? static_cast<const char*>(cp.pCheckpointMarker) : "??");
-				}
-			}
 		};
 
 		auto flush = [&]()
@@ -916,11 +935,11 @@ int main(int argc, const char** argv)
 			}
 		};
 
-		auto cull = [&](VkPipeline pipeline, uint32_t timestamp, const char* phase, bool late)
+		auto cull = [&](VkPipeline pipeline, uint32_t timestamp, const char* phase)
 		{
 			VK_CHECKPOINT(phase);
 
-			vkCmdWriteTimestamp(commandBuffer, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, queryPoolTimestamp, timestamp + 0);
+			vkCmdWriteTimestamp(commandBuffer, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, queryPoolTimestamp, timestamp + 0);
 
 			VkBufferMemoryBarrier prefillBarrier = bufferBarrier(dccb.buffer, VK_ACCESS_INDIRECT_COMMAND_READ_BIT, VK_ACCESS_TRANSFER_WRITE_BIT);
 			vkCmdPipelineBarrier(commandBuffer, VK_PIPELINE_STAGE_DRAW_INDIRECT_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, 0, 1, &prefillBarrier, 0, 0);
@@ -931,14 +950,13 @@ int main(int argc, const char** argv)
 
 			VkBufferMemoryBarrier fillBarrier = bufferBarrier(dccb.buffer, VK_ACCESS_TRANSFER_WRITE_BIT, VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT);
 			VkImageMemoryBarrier readBarrier = imageBarrier(depthPyramid.image, 0, VK_ACCESS_SHADER_READ_BIT, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_GENERAL);
-			VkPipelineStageFlags srcStageFlags = late ? VK_PIPELINE_STAGE_TRANSFER_BIT | VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT : VK_PIPELINE_STAGE_TRANSFER_BIT;
+			VkPipelineStageFlags srcStageFlags = VK_PIPELINE_STAGE_TRANSFER_BIT;
 			vkCmdPipelineBarrier(commandBuffer, srcStageFlags, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0, 0, 0, 1, &fillBarrier, 1, &readBarrier);
 
 			vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, pipeline);
 
 			DescriptorInfo pyramidDesc(depthSampler, depthPyramid.imageView, VK_IMAGE_LAYOUT_GENERAL);
-			DescriptorInfo descriptors[] = { db.buffer, mb.buffer, dcb.buffer, dccb.buffer, dvb.buffer, pyramidDesc };
-			// vkCmdPushDescriptorSetWithTemplateKHR(commandBuffer, drawcullProgram.updateTemplate, drawcullProgram.layout, 0, descriptors);
+			DescriptorInfo descriptors[] = { db.buffer, mb.buffer, dcb.buffer, dccb.buffer };
 			pushDescriptors(drawcullProgram, descriptors);
 
 			vkCmdPushConstants(commandBuffer, drawcullProgram.layout, drawcullProgram.pushConstantStages, 0, sizeof(cullData), &cullData);
@@ -948,20 +966,20 @@ int main(int argc, const char** argv)
 
 			VkBufferMemoryBarrier cullBarriers[] =
 			{
-				bufferBarrier(dcb.buffer, VK_ACCESS_SHADER_WRITE_BIT, VK_ACCESS_INDIRECT_COMMAND_READ_BIT),
+				bufferBarrier(dcb.buffer, VK_ACCESS_SHADER_WRITE_BIT, VK_ACCESS_INDIRECT_COMMAND_READ_BIT | VK_ACCESS_SHADER_READ_BIT),
 				bufferBarrier(dccb.buffer, VK_ACCESS_SHADER_WRITE_BIT, VK_ACCESS_INDIRECT_COMMAND_READ_BIT),
 			};
 
 			vkCmdPipelineBarrier(commandBuffer, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_DRAW_INDIRECT_BIT, 0, 0, 0, COUNTOF(cullBarriers), cullBarriers, 0, 0);
 
-			vkCmdWriteTimestamp(commandBuffer, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, queryPoolTimestamp, timestamp + 1);
+			vkCmdWriteTimestamp(commandBuffer, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, queryPoolTimestamp, timestamp + 1);
 		};
 
 		auto render = [&](VkRenderPass renderPass, uint32_t clearValueCount, const VkClearValue* clearValues, uint32_t query, const char* phase)
 		{
 			VK_CHECKPOINT(phase);
 
-			vkCmdBeginQuery(commandBuffer, queryPoolPipeline, query, 0);
+			// vkCmdBeginQuery(commandBuffer, queryPoolPipeline, query, 0);
 
 			VkRenderPassBeginInfo passBeginInfo = { VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO };
 			passBeginInfo.renderPass = renderPass;
@@ -986,38 +1004,36 @@ int main(int argc, const char** argv)
 				vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, meshPipelineMS);
 
 				DescriptorInfo descriptors[] = { dcb.buffer, db.buffer, mlb.buffer, mdb.buffer, vb.buffer };
-				// vkCmdPushDescriptorSetWithTemplateKHR(commandBuffer, meshProgramMS.updateTemplate, meshProgramMS.layout, 0, descriptors);
 				pushDescriptors(meshProgramMS, descriptors);
 
 				vkCmdPushConstants(commandBuffer, meshProgramMS.layout, meshProgramMS.pushConstantStages, 0, sizeof(globals), &globals);
-				vkCmdDrawMeshTasksIndirectCountNV(commandBuffer, dcb.buffer, offsetof(MeshDrawCommand, indirectMS), dccb.buffer, 0, uint32_t(draws.size()), sizeof(MeshDrawCommand));
+				vkCmdDrawMeshTasksIndirectNV(commandBuffer, dcb.buffer, offsetof(MeshDrawCommand, indirectMS), uint32_t(draws.size()), sizeof(MeshDrawCommand));
 			}
 			else
 			{
 				vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, meshPipeline);
 
 				DescriptorInfo descriptors[] = { dcb.buffer, db.buffer, vb.buffer };
-				// vkCmdPushDescriptorSetWithTemplateKHR(commandBuffer, meshProgram.updateTemplate, meshProgram.layout, 0, descriptors);
 				pushDescriptors(meshProgram, descriptors);
 
 				vkCmdBindIndexBuffer(commandBuffer, ib.buffer, 0, VK_INDEX_TYPE_UINT32);
 
 				vkCmdPushConstants(commandBuffer, meshProgram.layout, meshProgram.pushConstantStages, 0, sizeof(globals), &globals);
-				vkCmdDrawIndexedIndirectCount(commandBuffer, dcb.buffer, offsetof(MeshDrawCommand, indirect), dccb.buffer, 0, uint32_t(draws.size()), sizeof(MeshDrawCommand));
+				vkCmdDrawIndexedIndirect(commandBuffer, dcb.buffer, offsetof(MeshDrawCommand, indirect), uint32_t(draws.size()), sizeof(MeshDrawCommand));
 			}
 
 			VK_CHECKPOINT("after draw");
 
 			vkCmdEndRenderPass(commandBuffer);
 
-			vkCmdEndQuery(commandBuffer, queryPoolPipeline, query);
+			// vkCmdEndQuery(commandBuffer, queryPoolPipeline, query);
 		};
 
 		auto pyramid = [&]()
 		{
 			VK_CHECKPOINT("pyramid");
 
-			vkCmdWriteTimestamp(commandBuffer, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, queryPoolTimestamp, 4);
+			vkCmdWriteTimestamp(commandBuffer, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, queryPoolTimestamp, 4);
 
 			VkImageMemoryBarrier depthReadBarriers[] =
 			{
@@ -1037,7 +1053,6 @@ int main(int argc, const char** argv)
 					: DescriptorInfo(depthSampler, depthPyramidMips[i - 1], VK_IMAGE_LAYOUT_GENERAL);
 
 				DescriptorInfo descriptors[] = { { depthPyramidMips[i], VK_IMAGE_LAYOUT_GENERAL }, sourceDepth };
-				// vkCmdPushDescriptorSetWithTemplateKHR(commandBuffer, depthreduceProgram.updateTemplate, depthreduceProgram.layout, 0, descriptors);
 				pushDescriptors(depthreduceProgram, descriptors);
 
 				uint32_t levelWidth = std::max(1u, depthPyramidWidth >> i);
@@ -1057,7 +1072,7 @@ int main(int argc, const char** argv)
 
 			vkCmdPipelineBarrier(commandBuffer, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT, VK_DEPENDENCY_BY_REGION_BIT, 0, 0, 0, 0, 1, &depthWriteBarrier);
 
-			vkCmdWriteTimestamp(commandBuffer, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, queryPoolTimestamp, 5);
+			vkCmdWriteTimestamp(commandBuffer, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, queryPoolTimestamp, 5);
 		};
 
 		VkImageMemoryBarrier renderBeginBarriers[] =
@@ -1066,9 +1081,9 @@ int main(int argc, const char** argv)
 			imageBarrier(depthTarget.image, 0, 0, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL, VK_IMAGE_ASPECT_DEPTH_BIT),
 		};
 
-		vkCmdPipelineBarrier(commandBuffer, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT | VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT, VK_DEPENDENCY_BY_REGION_BIT, 0, 0, 0, 0, COUNTOF(renderBeginBarriers), renderBeginBarriers);
+		vkCmdPipelineBarrier(commandBuffer, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT | VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT, VK_DEPENDENCY_BY_REGION_BIT, 0, 0, 0, 0, COUNTOF(renderBeginBarriers), renderBeginBarriers);
 
-		vkCmdResetQueryPool(commandBuffer, queryPoolPipeline, 0, 4);
+		// vkCmdResetQueryPool(commandBuffer, queryPoolPipeline, 0, 4);
 
 		VkClearValue clearValues[2] = {};
 		clearValues[0].color = { 48.f / 255.f, 10.f / 255.f, 36.f / 255.f, 1 };
@@ -1076,22 +1091,14 @@ int main(int argc, const char** argv)
 
 		VK_CHECKPOINT("frame");
 
-		// early cull: frustum cull & fill objects that *were* visible last frame
-		cullData.lateWorkaroundAMD = 0;
-		cull(drawcullPipeline, 2, "early cull", false);
+		// cull: frustum cull & lod
+		cull(drawcullPipeline, 2, "cull");
 
-		// early render: render objects that were visible last frame
-		render(renderPass, COUNTOF(clearValues), clearValues, 0, "early render");
+		// render: render objects 
+		render(renderPass, COUNTOF(clearValues), clearValues, 0, "render");
 
 		// depth pyramid generation
 		pyramid();
-
-		// late cull: frustum + occlusion cull & fill objects that were *not* visible last frame
-		cullData.lateWorkaroundAMD = 1;
-		cull(drawculllatePipeline, 6, "late cull", true);
-
-		// late render: render objects that are visible this frame but weren't drawn in the early pass
-		render(renderPassLate, 0, nullptr, 1, "late render");
 
 		VkImageMemoryBarrier copyBarriers[] =
 		{
@@ -1138,7 +1145,7 @@ int main(int argc, const char** argv)
 		VkImageMemoryBarrier presentBarrier = imageBarrier(swapchain.images[imageIndex], VK_ACCESS_TRANSFER_WRITE_BIT, 0, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_PRESENT_SRC_KHR);
 		vkCmdPipelineBarrier(commandBuffer, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_DEPENDENCY_BY_REGION_BIT, 0, 0, 0, 0, 1, &presentBarrier);
 
-		vkCmdWriteTimestamp(commandBuffer, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, queryPoolTimestamp, 1);
+		vkCmdWriteTimestamp(commandBuffer, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, queryPoolTimestamp, 1);
 
 		VK_CHECK(vkEndCommandBuffer(commandBuffer));
 
@@ -1153,7 +1160,7 @@ int main(int argc, const char** argv)
 		submitInfo.signalSemaphoreCount = 1;
 		submitInfo.pSignalSemaphores = &releaseSemaphore;
 
-		VK_CHECK(vkQueueSubmit(queue, 1, &submitInfo, VK_NULL_HANDLE));
+		VK_CHECK(vkQueueSubmit(queue, 1, &submitInfo, inFlightFence));
 
 		VkPresentInfoKHR presentInfo = { VK_STRUCTURE_TYPE_PRESENT_INFO_KHR };
 		presentInfo.waitSemaphoreCount = 1;
@@ -1164,16 +1171,11 @@ int main(int argc, const char** argv)
 
 		VK_CHECK(vkQueuePresentKHR(queue, &presentInfo));
 
-		VkResult wfi = vkDeviceWaitIdle(device);
-		if (wfi == VK_ERROR_DEVICE_LOST)
-			itsdeadjim();
-		VK_CHECK(wfi);
-
 		uint64_t timestampResults[8] = {};
-		VK_CHECK(vkGetQueryPoolResults(device, queryPoolTimestamp, 0, COUNTOF(timestampResults), sizeof(timestampResults), timestampResults, sizeof(timestampResults[0]), VK_QUERY_RESULT_64_BIT));
+		VK_CHECK(vkGetQueryPoolResults(device, queryPoolTimestamp, 0, COUNTOF(timestampResults), sizeof(timestampResults), timestampResults, sizeof(timestampResults[0]), VK_QUERY_RESULT_64_BIT | VK_QUERY_RESULT_PARTIAL_BIT));
 
 		uint32_t pipelineResults[2] = {};
-		VK_CHECK(vkGetQueryPoolResults(device, queryPoolPipeline, 0, COUNTOF(pipelineResults), sizeof(pipelineResults), pipelineResults, sizeof(pipelineResults[0]), 0));
+		// VK_CHECK(vkGetQueryPoolResults(device, queryPoolPipeline, 0, COUNTOF(pipelineResults), sizeof(pipelineResults), pipelineResults, sizeof(pipelineResults[0]), 0));
 
 		uint32_t triangleCount = pipelineResults[0] + pipelineResults[1];
 
@@ -1181,19 +1183,19 @@ int main(int argc, const char** argv)
 		double frameGpuEnd = double(timestampResults[1]) * props.limits.timestampPeriod * 1e-6;
 		double cullGpuTime = double(timestampResults[3] - timestampResults[2]) * props.limits.timestampPeriod * 1e-6;
 		double pyramidGpuTime = double(timestampResults[5] - timestampResults[4]) * props.limits.timestampPeriod * 1e-6;
-		double culllateGpuTime = double(timestampResults[7] - timestampResults[6]) * props.limits.timestampPeriod * 1e-6;
 
 		double frameCpuEnd = glfwGetTime() * 1000;
 
 		frameCpuAvg = frameCpuAvg * 0.95 + (frameCpuEnd - frameCpuBegin) * 0.05;
+		frameCpuWaitAvg = frameCpuWaitAvg * 0.95 + (frameFenceEnd - frameFenceBegin) * 0.05;
 		frameGpuAvg = frameGpuAvg * 0.95 + (frameGpuEnd - frameGpuBegin) * 0.05;
 
 		double trianglesPerSec = double(triangleCount) / double(frameGpuAvg * 1e-3);
 		double drawsPerSec = double(drawCount) / double(frameGpuAvg * 1e-3);
 
 		char title[256];
-		sprintf(title, "cpu: %.2f ms; gpu: %.2f ms (cull: %.2f ms, pyramid: %.2f ms, cull late: %.2f); triangles %.1fM; %.1fB tri/sec, %.1fM draws/sec; mesh shading %s, frustum culling %s, occlusion culling %s, level-of-detail %s",
-			frameCpuAvg, frameGpuAvg, cullGpuTime, pyramidGpuTime, culllateGpuTime,
+		sprintf(title, "cpu: %.2f ms; wait: %.2f ms; gpu: %.2f ms (cull: %.2f ms, pyramid: %.2f ms); triangles %.1fM; %.1fB tri/sec, %.1fM draws/sec; mesh shading %s, frustum culling %s, occlusion culling %s, level-of-detail %s",
+			frameCpuAvg, frameCpuWaitAvg, frameGpuAvg, cullGpuTime, pyramidGpuTime,
 			double(triangleCount) * 1e-6, trianglesPerSec * 1e-9, drawsPerSec * 1e-6,
 			meshShadingSupported && meshShadingEnabled ? "ON" : "OFF", cullingEnabled ? "ON" : "OFF", occlusionEnabled ? "ON" : "OFF", lodEnabled ? "ON" : "OFF");
 
@@ -1221,7 +1223,6 @@ int main(int argc, const char** argv)
 	destroyBuffer(mb, device);
 
 	destroyBuffer(db, device);
-	destroyBuffer(dvb, device);
 	destroyBuffer(dcb, device);
 	destroyBuffer(dccb, device);
 
@@ -1242,7 +1243,7 @@ int main(int argc, const char** argv)
 		vkDestroyDescriptorPool(device, descriptorPool, 0);
 
 	vkDestroyQueryPool(device, queryPoolTimestamp, 0);
-	vkDestroyQueryPool(device, queryPoolPipeline, 0);
+	// vkDestroyQueryPool(device, queryPoolPipeline, 0);
 
 	destroySwapchain(device, swapchain);
 
@@ -1279,6 +1280,8 @@ int main(int argc, const char** argv)
 	vkDestroyRenderPass(device, renderPass, 0);
 	vkDestroyRenderPass(device, renderPassLate, 0);
 
+
+    vkDestroyFence(device, inFlightFence, 0);
 	vkDestroySemaphore(device, releaseSemaphore, 0);
 	vkDestroySemaphore(device, acquireSemaphore, 0);
 

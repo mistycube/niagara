@@ -6,7 +6,7 @@
 
 #include <algorithm>
 
-#define VSYNC 1
+#define VSYNC 0
 
 VkSurfaceKHR createSurface(VkInstance instance, GLFWwindow* window)
 {
@@ -18,6 +18,13 @@ VkSurfaceKHR createSurface(VkInstance instance, GLFWwindow* window)
 	VkSurfaceKHR surface = 0;
 	VK_CHECK(vkCreateWin32SurfaceKHR(instance, &createInfo, 0, &surface));
 	return surface;
+#elif defined(VK_USE_PLATFORM_METAL_EXT)
+    VkSurfaceKHR surface = 0;
+	// VkMetalSurfaceCreateInfoEXT createInfo = { VK_STRUCTURE_TYPE_METAL_SURFACE_CREATE_INFO_EXT };
+	// createInfo.pLayer = ((_GLFWwindowNS*)glfwGetCocoaWindow(window))->ns.layer;
+	// vkCreateMetalSurfaceEXT(instance, &createInfo, 0, &surface);
+    VK_CHECK(glfwCreateWindowSurface(instance, window, 0, &surface));
+    return surface;
 #else
 #error Unsupported platform
 #endif

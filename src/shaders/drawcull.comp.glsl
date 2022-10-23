@@ -7,14 +7,6 @@
 
 #include "mesh.h"
 
-#if 0
-// Note: this should work, but unfortunately on AMD drivers it doesn't :(
-// Because of this, we use the workaround where instead of a spec constant we use a uniform
-layout (constant_id = 0) const bool LATE = false;
-#else
-#define LATE cullData.lateWorkaroundAMD
-#endif
-
 layout(local_size_x = 64, local_size_y = 1, local_size_z = 1) in;
 
 layout(push_constant) uniform block
@@ -42,43 +34,11 @@ layout(binding = 3) buffer DrawCommandCount
 	uint drawCommandCount;
 };
 
-layout(binding = 4) buffer DrawVisibility
-{
-	uint drawVisibility[];
-};
-
-layout(binding = 5) uniform sampler2D depthPyramid;
-
-// 2D Polyhedral Bounds of a Clipped, Perspective-Projected 3D Sphere. Michael Mara, Morgan McGuire. 2013
-bool projectSphere(vec3 C, float r, float znear, float P00, float P11, out vec4 aabb)
-{
-	if (C.z < r + znear)
-		return false;
-
-	vec2 cx = -C.xz;
-	vec2 vx = vec2(sqrt(dot(cx, cx) - r * r), r);
-	vec2 minx = mat2(vx.x, vx.y, -vx.y, vx.x) * cx;
-	vec2 maxx = mat2(vx.x, -vx.y, vx.y, vx.x) * cx;
-
-	vec2 cy = -C.yz;
-	vec2 vy = vec2(sqrt(dot(cy, cy) - r * r), r);
-	vec2 miny = mat2(vy.x, vy.y, -vy.y, vy.x) * cy;
-	vec2 maxy = mat2(vy.x, -vy.y, vy.y, vy.x) * cy;
-
-	aabb = vec4(minx.x / minx.y * P00, miny.x / miny.y * P11, maxx.x / maxx.y * P00, maxy.x / maxy.y * P11);
-	aabb = aabb.xwzy * vec4(0.5f, -0.5f, 0.5f, -0.5f) + vec4(0.5f); // clip space -> uv space
-
-	return true;
-}
-
 void main()
 {
 	uint di = gl_GlobalInvocationID.x;
 
 	if (di >= cullData.drawCount)
-		return;
-
-	if (!LATE && drawVisibility[di] == 0)
 		return;
 
 	uint meshIndex = draws[di].meshIndex;
@@ -96,47 +56,26 @@ void main()
 
 	visible = visible || cullData.cullingEnabled == 0;
 
-	if (LATE && visible && cullData.occlusionEnabled == 1)
-	{
-		vec4 aabb;
-		if (projectSphere(center, radius, cullData.znear, cullData.P00, cullData.P11, aabb))
-		{
-			float width = (aabb.z - aabb.x) * cullData.pyramidWidth;
-			float height = (aabb.w - aabb.y) * cullData.pyramidHeight;
+	// uint dci = atomicAdd(drawCommandCount, 1);
 
-			float level = floor(log2(max(width, height)));
+	// lod distance i = base * pow(step, i)
+	// i = log2(distance / base) / log2(step)
+	float lodIndexF = log2(length(center) / cullData.lodBase) / log2(cullData.lodStep);
+	uint lodIndex = min(uint(max(lodIndexF + 1, 0)), mesh.lodCount - 1);
 
-			// Sampler is set up to do min reduction, so this computes the minimum depth of a 2x2 texel quad
-			float depth = textureLod(depthPyramid, (aabb.xy + aabb.zw) * 0.5, level).x;
-			float depthSphere = cullData.znear / (center.z - radius);
+	lodIndex = cullData.lodEnabled == 1 ? lodIndex : 0;
 
-			visible = visible && depthSphere > depth;
-		}
-	}
+	MeshLod lod = meshes[meshIndex].lods[lodIndex];
 
-	if (visible && (!LATE || drawVisibility[di] == 0))
-	{
-		uint dci = atomicAdd(drawCommandCount, 1);
+	uint instanceCount = 1;
 
-		// lod distance i = base * pow(step, i)
-		// i = log2(distance / base) / log2(step)
-		float lodIndexF = log2(length(center) / cullData.lodBase) / log2(cullData.lodStep);
-		uint lodIndex = min(uint(max(lodIndexF + 1, 0)), mesh.lodCount - 1);
+	drawCommands[di].drawId = di;
+	drawCommands[di].indexCount = lod.indexCount;
+	drawCommands[di].instanceCount = visible ? 1 : 0;
+	drawCommands[di].firstIndex = lod.indexOffset;
+	drawCommands[di].vertexOffset = mesh.vertexOffset;
+	drawCommands[di].firstInstance = di;
+	drawCommands[di].taskCount = (lod.meshletCount + 31) / 32;
+	drawCommands[di].firstTask = lod.meshletOffset / 32;
 
-		lodIndex = cullData.lodEnabled == 1 ? lodIndex : 0;
-
-		MeshLod lod = meshes[meshIndex].lods[lodIndex];
-
-		drawCommands[dci].drawId = di;
-		drawCommands[dci].indexCount = lod.indexCount;
-		drawCommands[dci].instanceCount = 1;
-		drawCommands[dci].firstIndex = lod.indexOffset;
-		drawCommands[dci].vertexOffset = mesh.vertexOffset;
-		drawCommands[dci].firstInstance = 0;
-		drawCommands[dci].taskCount = (lod.meshletCount + 31) / 32;
-		drawCommands[dci].firstTask = lod.meshletOffset / 32;
-	}
-
-	if (LATE)
-		drawVisibility[di] = visible ? 1 : 0;
 }

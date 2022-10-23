@@ -6,7 +6,7 @@
 #include <vector>
 
 #if VK_HEADER_VERSION >= 135
-#include <spirv-headers/spirv.h>
+#include <spirv_cross/spirv.h>
 #else
 #include <vulkan/spirv.h>
 #endif
