@@ -760,13 +760,13 @@ int main(int argc, const char** argv)
 
 	double frameCpuAvg = 0;
 	double frameCpuWaitAvg = 0;
+	double frameCpuSubmitAvg = 0;
 	double frameGpuAvg = 0;
 
 	uint64_t frameIndex = 0;
 
 	while (!glfwWindowShouldClose(window))
 	{
-		
 		double frameFenceBegin = glfwGetTime() * 1000;
 		auto itsdeadjim = [&]()
 		{
@@ -786,11 +786,11 @@ int main(int argc, const char** argv)
 				}
 			}
 		};
-        VkResult wfi = vkWaitForFences(device, 1, &inFlightFence, VK_TRUE, UINT64_MAX);
-		if (wfi == VK_ERROR_DEVICE_LOST)
-			itsdeadjim();
-		VK_CHECK(wfi);
-        vkResetFences(device, 1, &inFlightFence);
+        // VkResult wfi = vkWaitForFences(device, 1, &inFlightFence, VK_TRUE, UINT64_MAX);
+		// if (wfi == VK_ERROR_DEVICE_LOST)
+		// 	itsdeadjim();
+		// VK_CHECK(wfi);
+        // vkResetFences(device, 1, &inFlightFence);
 		
 		double frameFenceEnd = glfwGetTime() * 1000;
 
@@ -966,7 +966,7 @@ int main(int argc, const char** argv)
 
 			VkBufferMemoryBarrier cullBarriers[] =
 			{
-				bufferBarrier(dcb.buffer, VK_ACCESS_SHADER_WRITE_BIT, VK_ACCESS_INDIRECT_COMMAND_READ_BIT | VK_ACCESS_SHADER_READ_BIT),
+				bufferBarrier(dcb.buffer, VK_ACCESS_SHADER_WRITE_BIT, VK_ACCESS_INDIRECT_COMMAND_READ_BIT),
 				bufferBarrier(dccb.buffer, VK_ACCESS_SHADER_WRITE_BIT, VK_ACCESS_INDIRECT_COMMAND_READ_BIT),
 			};
 
@@ -1095,10 +1095,10 @@ int main(int argc, const char** argv)
 		cull(drawcullPipeline, 2, "cull");
 
 		// render: render objects 
-		render(renderPass, COUNTOF(clearValues), clearValues, 0, "render");
+		// render(renderPass, COUNTOF(clearValues), clearValues, 0, "render");
 
 		// depth pyramid generation
-		pyramid();
+		// pyramid();
 
 		VkImageMemoryBarrier copyBarriers[] =
 		{
@@ -1160,7 +1160,9 @@ int main(int argc, const char** argv)
 		submitInfo.signalSemaphoreCount = 1;
 		submitInfo.pSignalSemaphores = &releaseSemaphore;
 
-		VK_CHECK(vkQueueSubmit(queue, 1, &submitInfo, inFlightFence));
+		double frameSubmitBegin = glfwGetTime() * 1000;
+		VK_CHECK(vkQueueSubmit(queue, 1, &submitInfo, VK_NULL_HANDLE));
+		double frameSubmitEnd = glfwGetTime() * 1000;
 
 		VkPresentInfoKHR presentInfo = { VK_STRUCTURE_TYPE_PRESENT_INFO_KHR };
 		presentInfo.waitSemaphoreCount = 1;
@@ -1170,8 +1172,13 @@ int main(int argc, const char** argv)
 		presentInfo.pImageIndices = &imageIndex;
 
 		VK_CHECK(vkQueuePresentKHR(queue, &presentInfo));
+		
+		VkResult wfi = vkDeviceWaitIdle(device);
+		if (wfi == VK_ERROR_DEVICE_LOST)
+			itsdeadjim();
+		VK_CHECK(wfi);
 
-		uint64_t timestampResults[8] = {};
+		uint64_t timestampResults[6] = {};
 		VK_CHECK(vkGetQueryPoolResults(device, queryPoolTimestamp, 0, COUNTOF(timestampResults), sizeof(timestampResults), timestampResults, sizeof(timestampResults[0]), VK_QUERY_RESULT_64_BIT | VK_QUERY_RESULT_PARTIAL_BIT));
 
 		uint32_t pipelineResults[2] = {};
@@ -1188,14 +1195,15 @@ int main(int argc, const char** argv)
 
 		frameCpuAvg = frameCpuAvg * 0.95 + (frameCpuEnd - frameCpuBegin) * 0.05;
 		frameCpuWaitAvg = frameCpuWaitAvg * 0.95 + (frameFenceEnd - frameFenceBegin) * 0.05;
+		frameCpuSubmitAvg = frameCpuSubmitAvg * 0.95 + (frameSubmitEnd - frameSubmitBegin) * 0.05;
 		frameGpuAvg = frameGpuAvg * 0.95 + (frameGpuEnd - frameGpuBegin) * 0.05;
 
 		double trianglesPerSec = double(triangleCount) / double(frameGpuAvg * 1e-3);
 		double drawsPerSec = double(drawCount) / double(frameGpuAvg * 1e-3);
 
 		char title[256];
-		sprintf(title, "cpu: %.2f ms; wait: %.2f ms; gpu: %.2f ms (cull: %.2f ms, pyramid: %.2f ms); triangles %.1fM; %.1fB tri/sec, %.1fM draws/sec; mesh shading %s, frustum culling %s, occlusion culling %s, level-of-detail %s",
-			frameCpuAvg, frameCpuWaitAvg, frameGpuAvg, cullGpuTime, pyramidGpuTime,
+		sprintf(title, "cpu: %.2f ms; wait: %.2f ms; submit: %.2f ms; gpu: %.2f ms (cull: %.2f ms, pyramid: %.2f ms); triangles %.1fM; %.1fB tri/sec, %.1fM draws/sec; mesh shading %s, frustum culling %s, occlusion culling %s, level-of-detail %s",
+			frameCpuAvg, frameCpuWaitAvg, frameCpuSubmitAvg, frameGpuAvg, cullGpuTime, pyramidGpuTime,
 			double(triangleCount) * 1e-6, trianglesPerSec * 1e-9, drawsPerSec * 1e-6,
 			meshShadingSupported && meshShadingEnabled ? "ON" : "OFF", cullingEnabled ? "ON" : "OFF", occlusionEnabled ? "ON" : "OFF", lodEnabled ? "ON" : "OFF");
 
