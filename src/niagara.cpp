@@ -767,7 +767,6 @@ int main(int argc, const char** argv)
 
 	while (!glfwWindowShouldClose(window))
 	{
-		double frameFenceBegin = glfwGetTime() * 1000;
 		auto itsdeadjim = [&]()
 		{
 			printf("FATAL ERROR: DEVICE LOST (frame %lld)\n", frameIndex);
@@ -786,13 +785,7 @@ int main(int argc, const char** argv)
 				}
 			}
 		};
-        // VkResult wfi = vkWaitForFences(device, 1, &inFlightFence, VK_TRUE, UINT64_MAX);
-		// if (wfi == VK_ERROR_DEVICE_LOST)
-		// 	itsdeadjim();
-		// VK_CHECK(wfi);
-        // vkResetFences(device, 1, &inFlightFence);
-		
-		double frameFenceEnd = glfwGetTime() * 1000;
+
 
 		double frameCpuBegin = glfwGetTime() * 1000;
 		glfwPollEvents();
@@ -1095,10 +1088,10 @@ int main(int argc, const char** argv)
 		cull(drawcullPipeline, 2, "cull");
 
 		// render: render objects 
-		// render(renderPass, COUNTOF(clearValues), clearValues, 0, "render");
+		render(renderPass, COUNTOF(clearValues), clearValues, 0, "render");
 
 		// depth pyramid generation
-		// pyramid();
+		pyramid();
 
 		VkImageMemoryBarrier copyBarriers[] =
 		{
@@ -1194,7 +1187,6 @@ int main(int argc, const char** argv)
 		double frameCpuEnd = glfwGetTime() * 1000;
 
 		frameCpuAvg = frameCpuAvg * 0.95 + (frameCpuEnd - frameCpuBegin) * 0.05;
-		frameCpuWaitAvg = frameCpuWaitAvg * 0.95 + (frameFenceEnd - frameFenceBegin) * 0.05;
 		frameCpuSubmitAvg = frameCpuSubmitAvg * 0.95 + (frameSubmitEnd - frameSubmitBegin) * 0.05;
 		frameGpuAvg = frameGpuAvg * 0.95 + (frameGpuEnd - frameGpuBegin) * 0.05;
 
@@ -1202,8 +1194,8 @@ int main(int argc, const char** argv)
 		double drawsPerSec = double(drawCount) / double(frameGpuAvg * 1e-3);
 
 		char title[256];
-		sprintf(title, "cpu: %.2f ms; wait: %.2f ms; submit: %.2f ms; gpu: %.2f ms (cull: %.2f ms, pyramid: %.2f ms); triangles %.1fM; %.1fB tri/sec, %.1fM draws/sec; mesh shading %s, frustum culling %s, occlusion culling %s, level-of-detail %s",
-			frameCpuAvg, frameCpuWaitAvg, frameCpuSubmitAvg, frameGpuAvg, cullGpuTime, pyramidGpuTime,
+		sprintf(title, "cpu: %.2f ms; submit: %.2f ms; gpu: %.2f ms (cull: %.2f ms, pyramid: %.2f ms); triangles %.1fM; %.1fB tri/sec, %.1fM draws/sec; mesh shading %s, frustum culling %s, occlusion culling %s, level-of-detail %s",
+			frameCpuAvg, frameCpuSubmitAvg, frameGpuAvg, cullGpuTime, pyramidGpuTime,
 			double(triangleCount) * 1e-6, trianglesPerSec * 1e-9, drawsPerSec * 1e-6,
 			meshShadingSupported && meshShadingEnabled ? "ON" : "OFF", cullingEnabled ? "ON" : "OFF", occlusionEnabled ? "ON" : "OFF", lodEnabled ? "ON" : "OFF");
 
