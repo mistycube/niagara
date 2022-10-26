@@ -1091,7 +1091,7 @@ int main(int argc, const char** argv)
 		render(renderPass, COUNTOF(clearValues), clearValues, 0, "render");
 
 		// depth pyramid generation
-		// pyramid();
+		pyramid();
 
 		VkImageMemoryBarrier copyBarriers[] =
 		{
