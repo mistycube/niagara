@@ -25,7 +25,7 @@ bool occlusionEnabled = true;
 bool debugPyramid = false;
 int debugPyramidLevel = 0;
 
-#define SHADER_PATH "/Users/mistycube/Projects/niagara/build/src/shaders/"
+#define SHADER_PATH "../build/src/shaders/"
 
 VkSemaphore createSemaphore(VkDevice device)
 {
@@ -706,7 +706,7 @@ int main(int argc, const char** argv)
 		uploadBuffer(device, commandPool, commandBuffer, queue, mdb, scratch, geometry.meshletdata.data(), geometry.meshletdata.size() * sizeof(uint32_t));
 	}
 
-	uint32_t drawCount = 500000;
+	uint32_t drawCount = 100000;
 
 	std::vector<MeshDraw> draws(drawCount);
 
@@ -726,7 +726,7 @@ int main(int argc, const char** argv)
 		draw.position[1] = (float(rand()) / RAND_MAX) * sceneRadius * 2 - sceneRadius;
 		draw.position[2] = (float(rand()) / RAND_MAX) * sceneRadius * 2 - sceneRadius;
 		draw.scale = (float(rand()) / RAND_MAX) + 1;
-		draw.scale /= 2;
+		draw.scale *= 2;
 
 		vec3 axis = normalize(vec3((float(rand()) / RAND_MAX) * 2 - 1, (float(rand()) / RAND_MAX) * 2 - 1, (float(rand()) / RAND_MAX) * 2 - 1));
 		float angle = glm::radians((float(rand()) / RAND_MAX) * 90.f);

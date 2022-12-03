@@ -13,9 +13,18 @@ The renderer is written using Visual Studio and targets Windows desktops with mo
 
 To build and run the project, clone this repository using --recursive flag:
 
-	git clone https://github.com/zeux/niagara.git --recursive
+	git clone https://github.com/mistycube/niagara.git --recursive
 
+For Windows:
 Make sure you have Vulkan SDK installed; open the Visual Studio project in niagara/src and build it.
+
+For MacOs:
+Make sure you have Vulkan SDK installed; To run the project:
+	mkdir build
+	cd build
+	cmake ../
+	make
+	./niagara ../data/kitten.obj
 
 To run the program, command line should contain arguments with paths to .obj files; you can use kitten.obj from data/ folder for testing.
 On lower-end GPUs you might want to change `drawCount` in `niagara.cpp` to be a value smaller than 1M.
